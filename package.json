@@ -1,0 +1,17 @@
+{
+  "name": "pathtraversal",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "electron": "^38.0.0",
+    "http-proxy": "^1.18.1",
+    "swagger-editor-dist": "^4.14.7"
+  }
+}
