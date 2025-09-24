@@ -1,47 +1,21 @@
-// proxy.js
-const http = require('http');
+const MitmProxy = require('http-mitm-proxy');
 
-function startProxyServer() {
-  const server = http.createServer((clientReq, clientRes) => {
-    console.log(clientReq, clientRes)
-    // 요청 헤더에서 목적지 호스트를 가져옵니다.
-    const targetHost = clientReq.headers.host;
-    if (!targetHost) {
-      clientRes.writeHead(400, { 'Content-Type': 'text/plain' });
-      clientRes.end('Host header is missing.');
-      return;
-    }
-    
-    const options = {
-      hostname: targetHost,
-      port: 80, // HTTP 기본 포트
-      path: clientReq.url,
-      method: clientReq.method,
-      headers: clientReq.headers,
-    };
-    
-    // 실제 서버에 요청을 보냅니다.
-    const proxyReq = http.request(options, (proxyRes) => {
-      // 서버 응답을 그대로 클라이언트에 전달합니다.
-      clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
-      proxyRes.pipe(clientRes);
-    });
-    
-    // 클라이언트의 요청 본문도 전달합니다.
-    clientReq.pipe(proxyReq);
-    
-    // 에러 처리
-    proxyReq.on('error', (e) => {
-      console.error(`프록시 요청 중 오류 발생: ${e.message}`);
-      clientRes.writeHead(500);
-      clientRes.end('Proxy Error');
-    });
-  });
+const proxy = new MitmProxy.Proxy;
 
-  return server;
-}
+proxy.onError((ctx, err) => {
+  console.error('Proxy Error:', err);
+});
 
-// 이 함수를 외부에서 사용할 수 있도록 내보냅니다.
-module.exports = {
-  startProxyServer
-};
+proxy.onRequest((ctx, callback) => {
+  // 요청 데이터를 여기서 확인하거나 수정할 수 있습니다.
+  console.log('Request:', ctx.clientToProxyRequest.method, ctx.clientToProxyRequest.url);
+  return callback();
+});
+
+proxy.onResponse((ctx, callback) => {
+  // 응답 데이터를 여기서 확인하거나 수정할 수 있습니다.
+  console.log('Response:', ctx.serverToProxyResponse.rawHeaders);
+  return callback();
+});
+
+module.exports = proxy;
