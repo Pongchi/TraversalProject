@@ -3,7 +3,10 @@ import queue
 from PySide6.QtCore import QThread
 from dataclasses import dataclass, field
 from typing import Dict
+import re
 import mitmproxy.http
+from urllib.parse import urlparse
+import os
 
 from mitmproxy.tools.dump import DumpMaster
 from mitmproxy import options
@@ -41,9 +44,64 @@ class PySideAddon:
     def __init__(self, shared_queue: queue.Queue):
         self.queue = shared_queue
         self.flows_by_id: Dict[str, mitmproxy.http.HTTPFlow] = {}
+        self.scope_regex = None
+        # 차단할 정적 파일 확장자 목록
+        self.blocked_extensions = {
+            '.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico',
+            '.mp3', '.mp4', '.woff', '.woff2', '.ttf', '.eot', '.webp'
+        }
+        # 차단할 Content-Type 목록 (소문자로 비교)
+        self.blocked_content_types = {
+            'application/javascript', 'text/css', 'image/', 'video/', 'audio/',
+            'font/', 'application/font-woff'
+        }
+        self.blocked_domains = {
+            "google-analytics.com", "googletagmanager.com",
+            "content-autofill.googleapis.com",
+        }
+
+    def set_scope(self, pattern: str):
+        """와일드카드 패턴을 정규식으로 변환하여 저장합니다."""
+        if not pattern:
+            self.scope_regex = None
+            print("Scope 필터가 해제되었습니다.")
+            return
+
+        try:
+            # 와일드카드(*)를 정규식(.*)으로 변환하고, 다른 특수문자는 escape 처리
+            regex_pattern = re.escape(pattern).replace('\\*', '.*')
+            self.scope_regex = re.compile(f"^{regex_pattern}$")
+            print(f"Scope 필터가 설정되었습니다: {pattern}")
+        except re.error as e:
+            print(f"잘못된 Scope 패턴입니다: {e}")
+            self.scope_regex = None
+
+    def request(self, flow: mitmproxy.http.HTTPFlow):
+        """요청 단계에서 차단할 도메인을 필터링합니다."""
+        # flow.request.host는 'www.google-analytics.com'과 같은 형태입니다.
+        for domain in self.blocked_domains:
+            if domain in flow.request.host:
+                flow.kill() # 요청을 즉시 중단시킵니다.
+                return
 
     def response(self, flow: mitmproxy.http.HTTPFlow):
-        self.flows_by_id[flow.id] = flow
+        # Scope 필터 확인
+        if self.scope_regex and not self.scope_regex.match(flow.request.pretty_url):
+            return # Scope에 맞지 않으면 무시
+
+        # 정적 파일 확장자 필터 확인
+        parsed_path = urlparse(flow.request.path).path.lower()
+        _, extension = os.path.splitext(parsed_path)
+        if extension in self.blocked_extensions:
+            return # 차단 목록에 있는 확장자면 무시
+
+        # Content-Type 헤더 필터 확인
+        if flow.response and 'content-type' in flow.response.headers:
+            content_type = flow.response.headers['content-type'].lower().split(';')[0]
+            for blocked_type in self.blocked_content_types:
+                # 'image/'와 같이 부분 일치를 허용하기 위해 startswith 사용
+                if content_type.startswith(blocked_type):
+                    return # 차단 목록에 있는 Content-Type이면 무시
 
         status = "No Response"
         response_headers = {}
@@ -53,6 +111,7 @@ class PySideAddon:
             response_headers = dict(flow.response.headers)
             response_body = flow.response.content or b""
 
+        self.flows_by_id[flow.id] = flow
         flow_data = FlowData(
             flow_id=flow.id,
             method=flow.request.method,
@@ -75,12 +134,12 @@ class PySideAddon:
         return self.flows_by_id.get(flow_id)
 
 class MitmThread(QThread):
-    def __init__(self, shared_queue: queue.Queue, command_queue: queue.Queue):
+    def __init__(self, shared_queue: queue.Queue, command_queue: queue.Queue, use_upstream: bool = False):
         super().__init__()
         self.shared_queue = shared_queue
         self.command_queue = command_queue
         self.master = None 
-        self.addon = None 
+        self.addon = PySideAddon(self.shared_queue)
 
     async def poll_command_queue(self):
         print("명령 큐 폴링 시작...")
@@ -92,6 +151,10 @@ class MitmThread(QThread):
                     flow_id, modified_request_text = command[1], command[2]
                     print(f"명령 수신: Replay (Flow ID: {flow_id})")
                     await self.replay_flow(flow_id, modified_request_text)
+                
+                elif command[0] == 'set_scope':
+                    scope_pattern = command[1]
+                    self.addon.set_scope(scope_pattern)
                     
             except queue.Empty:
                 await asyncio.sleep(0.1)
@@ -145,9 +208,11 @@ class MitmThread(QThread):
             traceback.print_exc()
 
     async def main_async(self):
-        opts = options.Options(listen_port=8080)
+        # 옵션 설정
+        opts = options.Options()
+        opts.listen_port = 8080
+
         self.master = DumpMaster(opts)
-        self.addon = PySideAddon(self.shared_queue)
         self.master.addons.add(self.addon)
         
         print("mitmproxy 마스터 및 명령 큐 폴링 동시 시작...")

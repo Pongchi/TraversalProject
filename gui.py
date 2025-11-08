@@ -1,7 +1,8 @@
 import queue
 from PySide6.QtWidgets import (
     QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
-    QSplitter, QTabWidget, QTextEdit, QPushButton, QHBoxLayout, QSpacerItem, QSizePolicy
+    QSplitter, QTabWidget, QTextEdit, QPushButton, QHBoxLayout, QSpacerItem, QSizePolicy,
+    QLabel, QLineEdit
 )
 from PySide6.QtCore import QTimer, Qt
 
@@ -26,8 +27,16 @@ class MainWindow(QMainWindow):
 
         # --- 상단 버튼 영역 ---
         top_layout = QHBoxLayout()
+        
+        top_layout.addWidget(QLabel("Scope:"))
+        self.scope_input = QLineEdit()
+        self.scope_input.setPlaceholderText("https://*.example.com/*")
+        self.scope_input.textChanged.connect(self.on_scope_changed)
+        top_layout.addWidget(self.scope_input)
+
         top_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
-        self.open_button = QPushButton("Browser Open")
+
+        self.open_button = QPushButton("Open Browser")
         top_layout.addWidget(self.open_button)
         main_layout.addLayout(top_layout)
 
@@ -64,6 +73,7 @@ class MainWindow(QMainWindow):
 
         # --- 시그널 연결 ---
         self.open_button.clicked.connect(self.on_open_browser_clicked)
+        self.scope_input.textChanged.connect(self.on_scope_changed)
         self.table.itemSelectionChanged.connect(self.display_flow_details)
         self.send_button.clicked.connect(self.on_send_clicked)
 
@@ -131,3 +141,11 @@ class MainWindow(QMainWindow):
         # URL 없이 Playwright 스레드 실행
         self.playwright_thread = PlaywrightThread(self)
         self.playwright_thread.start()
+
+    def on_scope_changed(self, text: str):
+        """Scope 입력이 변경되면 command 큐에 'set_scope' 명령을 보냅니다."""
+        command = ('set_scope', text)
+        try:
+            self.command_queue.put(command)
+        except Exception as e:
+            print(f"Scope 설정 명령 전송 오류: {e}")
