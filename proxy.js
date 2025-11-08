@@ -1,4 +1,3 @@
-// test site : http://222.84.61.57:8080/NTRdrBookRetr.do
 const http = require('http');
 const httpProxy = require('http-proxy');
 const tls = require('tls');
@@ -46,7 +45,7 @@ server.on('connect', (req, clientSocket, head) => {
         console.error('Client Socket Error:', err);
     });
 
-    const { port, hostname } = new URL(`http://${req.url}`);
+    const { port, hostname } = new URL(`https://${req.url}`);
 
     // 1. 요청된 호스트 이름(hostname)으로 동적 인증서 실시간 생성
     const serverCertData = createServerCertificate(hostname);
@@ -70,7 +69,11 @@ server.on('connect', (req, clientSocket, head) => {
             console.log(`\n[${hostname}] ---> ${mitmReq.method} ${mitmReq.url}`);
             
             const bodyChunks = [];
-            mitmReq.on('data', chunk => bodyChunks.push(chunk));
+            mitmReq.on('data', chunk => {
+              bodyChunks.push(chunk);
+              proxyReq.write(chunk);
+            }
+          );
             mitmReq.on('end', () => {
                 const body = Buffer.concat(bodyChunks).toString();
                 if (body) {
@@ -98,17 +101,13 @@ server.on('connect', (req, clientSocket, head) => {
                 mitmRes.writeHead(502); // Bad Gateway
                 mitmRes.end();
             });
-
-            mitmReq.pipe(proxyReq);
         });
 
         mitmServer.emit('connection', decryptedSocket);
     });
 
     tlsServer.on('error', (err) => console.error('TLS Server Error:', err));
-
-    // 6. 최초 클라이언트 소켓을 우리 가짜 TLS 서버로 파이핑하여 핸드셰이크 시작
-    clientSocket.pipe(tlsServer);
+    clientSocket.pipe(tlsServer, { end: false});
 });
 
 // --- 동적으로 가짜 인증서를 생성하는 함수 ---
@@ -124,11 +123,10 @@ function createServerCertificate(hostname) {
     
     const attrs = [{ name: 'commonName', value: hostname }];
     cert.setSubject(attrs);
-    cert.setIssuer(caCert.subject.attributes); // 우리 Root CA가 발급했다고 설정
+    cert.setIssuer(caCert.subject.attributes);
     cert.setExtensions([{ name: 'subjectAltName', altNames: [{ type: 2, value: hostname }] }]);
     
-    cert.sign(caKey, forge.md.sha256.create()); // 우리 Root CA 개인키로 서명
-    
+    cert.sign(caKey, forge.md.sha256.create());
     return { privateKey: keys.privateKey, cert: cert };
 }
 
