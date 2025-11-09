@@ -9,12 +9,13 @@ if sys.platform == 'win32':
 
 from gui import MainWindow
 from proxy import MitmThread
+from browser import PlaywrightThread
 
 if __name__ == "__main__":
     # --- Windows 작업 표시줄 아이콘 설정 ---
     # 이 ID는 애플리케이션을 고유하게 식별하여 작업 표시줄에 아이콘이 올바르게 표시되도록 돕습니다.
     if sys.platform == 'win32':
-        myappid = 'casper.traversalproject.1.0' 
+        myappid = 'pongchi.clonecoding.burpsutie.1.0' 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     # ------------------------------------
 
@@ -30,11 +31,13 @@ if __name__ == "__main__":
     # mitmproxy <-> GUI 통신을 위한 큐
     shared_queue = queue.Queue()  # 데이터 전달용 (proxy -> gui)
     command_queue = queue.Queue() # 명령 전달용 (gui -> proxy)
+    browser_command_queue = queue.Queue() # 명령 전달용 (proxy -> browser)
 
     # 메인 윈도우와 mitmproxy 스레드 생성
     main_window = MainWindow(shared_queue, command_queue)
-    mitm_thread = MitmThread(shared_queue, command_queue)
+    mitm_thread = MitmThread(shared_queue, command_queue, browser_command_queue)
     
+    main_window.playwright_thread = PlaywrightThread(browser_command_queue)
     # 애플리케이션 종료 시 mitmproxy 스레드도 함께 종료되도록 연결
     app.aboutToQuit.connect(mitm_thread.shutdown)
     mitm_thread.start()

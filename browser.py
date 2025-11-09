@@ -1,11 +1,16 @@
 import asyncio
+import queue
 from PySide6.QtCore import QThread
 from playwright.async_api import async_playwright
 import os
+import google.generativeai as genai
+from dotenv import load_dotenv
 
 class PlaywrightThread(QThread):
-    def __init__(self, parent=None):
+    def __init__(self, browser_command_queue: queue.Queue, parent=None):
         super().__init__(parent)
+        self.command_queue = browser_command_queue
+        self.page = None
         
     def run(self):
         """Playwright를 실행하여 브라우저를 엽니다."""
@@ -13,6 +18,114 @@ class PlaywrightThread(QThread):
             asyncio.run(self.start_browser())
         except Exception as e:
             print(f"Playwright 스레드 오류: {e}")
+
+    async def poll_command_queue(self):
+        """GUI로부터 오는 명령을 처리합니다."""
+        print("Playwright 명령 큐 폴링 시작...")
+        while True:
+            try:
+                command = self.command_queue.get_nowait()
+                if command[0] == 'replay':
+                    request_text = command[1]
+                    await self.replay_in_browser(request_text)
+                elif command[0] == 'render':
+                    html_content = command[1]
+                    await self.render_in_browser(html_content)
+            except queue.Empty:
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"Playwright 명령 처리 중 오류: {e}")
+
+    async def replay_in_browser(self, request_text: str):
+        """브라우저의 현재 페이지에서 fetch를 사용하여 요청을 보냅니다."""
+        if not self.page:
+            print("오류: Playwright 페이지가 준비되지 않았습니다.")
+            return
+
+        print("브라우저에서 fetch 요청 실행...")
+        try:
+            # 브라우저 컨텍스트에서 실행할 JavaScript 코드
+            # request_text를 파싱하여 fetch 옵션을 만듭니다.
+            js_code = f"""
+            async (rawRequest) => {{
+                const parts = rawRequest.replace(/\\r\\n/g, '\\n').split('\\n\\n');
+                const headerPart = parts[0];
+                const body = parts.length > 1 ? parts[1] : undefined;
+                const headerLines = headerPart.split('\\n');
+                const [method, path, ..._] = headerLines.shift().split(' ');
+                const headers = {{}};
+                headerLines.forEach(line => {{ const [key, value] = line.split(/:(.*)/s); if (key) headers[key.trim()] = value.trim(); }});
+                
+                const options = {{ method, headers }};
+                if (method.toUpperCase() !== 'GET' && method.toUpperCase() !== 'HEAD') {{
+                    options.body = body;
+                }}
+
+                await fetch(path, options);
+            }}
+            """
+            await self.page.evaluate(js_code, request_text)
+            print("브라우저 fetch 요청 완료.")
+        except Exception as e:
+            print(f"브라우저에서 요청 리플레이 중 오류 발생: {e}")
+
+    async def render_in_browser(self, html_content: str):
+        """브라우저의 현재 페이지 내용을 주어진 HTML로 설정합니다."""
+        if not self.page:
+            print("오류: Playwright 페이지가 준비되지 않았습니다.")
+            return
+        
+        print("브라우저에서 응답 렌더링 실행...")
+        try:
+            await self.page.set_content(html_content)
+            print("브라우저 응답 렌더링 완료.")
+        except Exception as e:
+            print(f"브라우저에서 응답 렌더링 중 오류 발생: {e}")
+
+    async def _send_ai_chunk_to_browser(self, chunk: str):
+        """AI 응답 텍스트 조각을 브라우저로 전송합니다."""
+        if not self.page:
+            return
+        try:
+            await self.page.evaluate("window.appendAiResponse", chunk)
+        except Exception as e:
+            print(f"AI 응답 조각 전송 중 오류: {e}")
+
+    async def handle_ai_prompt(self, prompt: str):
+        """브라우저로부터 AI 프롬프트를 받아 처리합니다."""
+        print(f"\n[AI Prompt] 수신: {prompt}")
+        try:
+            # 1. API 키 설정 (환경 변수에서 로드)
+            load_dotenv() # .env 파일에서 환경 변수를 로드합니다.
+            api_key = os.getenv("GEMINI_API_KEY") 
+            
+            if not api_key:
+                error_message = "[AI Error] GEMINI_API_KEY 환경 변수가 설정되지 않았습니다."
+                print(error_message)
+                await self._send_ai_chunk_to_browser(error_message)
+                return
+
+            genai.configure(api_key=api_key)
+
+            # 2. 모델 초기화 및 스트리밍으로 프롬프트 전송
+            model = genai.GenerativeModel('gemini-2.5-flash') # 최신 Flash 모델로 변경
+            response_stream = await model.generate_content_async(prompt, stream=True)
+
+            # 3. 스트리밍 결과를 실시간으로 브라우저에 전송
+            if self.page:
+                await self.page.evaluate("window.startAiResponse()")
+
+            full_response = ""
+            async for chunk in response_stream:
+                if chunk.text:
+                    full_response += chunk.text
+                    await self._send_ai_chunk_to_browser(chunk.text)
+            
+            print(f"[AI Response]\n---\n{full_response}\n---")
+        except Exception as e:
+            error_message = f"[AI Error] Gemini API 처리 중 오류 발생: {e}"
+            print(error_message)
+            await self._send_ai_chunk_to_browser(error_message)
 
     async def start_browser(self):
         """사용자가 수동으로 탐색할 수 있도록 프록시가 설정된 브라우저를 실행합니다."""
@@ -37,6 +150,9 @@ class PlaywrightThread(QThread):
             
             context = await browser.new_context(proxy={"server": "http://127.0.0.1:8080"}, ignore_https_errors=True)
 
+            # --- [핵심] Python 함수를 브라우저의 window 객체에 노출 ---
+            await context.expose_function("handleAiPrompt", self.handle_ai_prompt)
+
             # --- [핵심 수정] script.js 파일에서 스크립트를 읽어와 주입 ---
             script_path = os.path.join(os.path.dirname(__file__), 'script.js')
             with open(script_path, 'r', encoding='utf-8') as f:
@@ -45,11 +161,16 @@ class PlaywrightThread(QThread):
             await context.add_init_script(script)
             # ----------------------------------------------------
 
-            page = await context.new_page()
+            self.page = await context.new_page()
             
             print(f"Playwright 브라우저가 시작되었습니다.")
-            await page.goto("about:blank")
+            await self.page.goto("about:blank")
 
-            # 사용자가 브라우저를 닫을 때까지 대기
-            await disconnected_future
+            # 브라우저 닫힘 이벤트와 명령 큐 폴링을 동시에 대기
+            await asyncio.gather(
+                disconnected_future,
+                self.poll_command_queue()
+            )
+
             await browser.close()
+            self.page = None

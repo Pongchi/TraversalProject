@@ -134,10 +134,11 @@ class PySideAddon:
         return self.flows_by_id.get(flow_id)
 
 class MitmThread(QThread):
-    def __init__(self, shared_queue: queue.Queue, command_queue: queue.Queue, use_upstream: bool = False):
+    def __init__(self, shared_queue: queue.Queue, command_queue: queue.Queue, browser_command_queue: queue.Queue | None = None):
         super().__init__()
         self.shared_queue = shared_queue
         self.command_queue = command_queue
+        self.browser_command_queue = browser_command_queue
         self.master = None 
         self.addon = PySideAddon(self.shared_queue)
 
@@ -155,6 +156,20 @@ class MitmThread(QThread):
                 elif command[0] == 'set_scope':
                     scope_pattern = command[1]
                     self.addon.set_scope(scope_pattern)
+
+                elif command[0] == 'replay_in_browser':
+                    if self.browser_command_queue:
+                        request_text = command[1]
+                        self.browser_command_queue.put(('replay', request_text))
+                    else:
+                        print("오류: 브라우저 명령 큐가 설정되지 않았습니다.")
+                
+                elif command[0] == 'render_in_browser':
+                    if self.browser_command_queue:
+                        response_body = command[1]
+                        self.browser_command_queue.put(('render', response_body))
+                    else:
+                        print("오류: 브라우저 명령 큐가 설정되지 않았습니다.")
                     
             except queue.Empty:
                 await asyncio.sleep(0.1)
