@@ -1,5 +1,6 @@
 import asyncio
 import queue
+import json
 from PySide6.QtCore import QThread
 from playwright.async_api import async_playwright
 import os
@@ -91,9 +92,46 @@ class PlaywrightThread(QThread):
         except Exception as e:
             print(f"AI 응답 조각 전송 중 오류: {e}")
 
-    async def handle_ai_prompt(self, prompt: str):
+    async def _apply_html_updates_in_browser(self, updates: list):
+        """AI가 생성한 HTML 수정사항을 브라우저에 적용하도록 명령합니다."""
+        if not self.page or not updates:
+            return
+        try:
+            await self.page.evaluate("window.applyHtmlUpdates", updates)
+        except Exception as e:
+            print(f"HTML 업데이트 적용 중 오류: {e}")
+
+    async def handle_ai_prompt(self, prompt: str, html_content: str | None = None, current_url: str | None = None):
         """브라우저로부터 AI 프롬프트를 받아 처리합니다."""
         print(f"\n[AI Prompt] 수신: {prompt}")
+        
+        context_info = []
+        if current_url:
+            print(f"[AI Prompt] URL 포함: {current_url}")
+            context_info.append(f"--- Current Page URL ---\n{current_url}")
+
+        if html_content:
+            print(f"[AI Prompt] HTML 콘텐츠 포함 (길이: {len(html_content)} bytes)")
+            context_info.append(f"--- Current Page HTML ---\n{html_content}")
+
+        context_str = "\n\n".join(context_info)
+
+        json_format_instruction = """
+IMPORTANT: Your response MUST be in the following JSON format only.
+
+1.  If the user asks a general question, or you are just providing an answer, set "isOnlyAnswer" to true.
+2.  If the user explicitly asks to modify the current page's HTML (e.g., "change the background color", "remove this button"), you MUST set "isOnlyAnswer" to false and provide the necessary changes in the "updates" array.
+3.  If you need to change an element's property that is not in the HTML source (like an input's `value`), use the "jscode" action.
+
+{
+  "isOnlyAnswer": <boolean>,
+  "result": "<string: Your textual answer to the user's prompt.>",
+  "updates": [
+    { "selector": "<string: A valid CSS selector, can be null for general jscode>", "action": "<'replace'|'append'|'prepend'|'remove'|'style'|'jscode'>", "content": "<string: The new HTML, CSS rules, or JavaScript code to execute>" }
+  ]
+}"""
+        final_prompt = f"{prompt}\n\n{context_str}\n\n{json_format_instruction}"
+
         try:
             # 1. API 키 설정 (환경 변수에서 로드)
             load_dotenv() # .env 파일에서 환경 변수를 로드합니다.
@@ -108,8 +146,8 @@ class PlaywrightThread(QThread):
             genai.configure(api_key=api_key)
 
             # 2. 모델 초기화 및 스트리밍으로 프롬프트 전송
-            model = genai.GenerativeModel('gemini-2.5-flash') # 최신 Flash 모델로 변경
-            response_stream = await model.generate_content_async(prompt, stream=True)
+            model = genai.GenerativeModel('gemini-2.5-flash')
+            response_stream = await model.generate_content_async(final_prompt, stream=True)
 
             # 3. 스트리밍 결과를 실시간으로 브라우저에 전송
             if self.page:
@@ -117,11 +155,26 @@ class PlaywrightThread(QThread):
 
             full_response = ""
             async for chunk in response_stream:
-                if chunk.text:
-                    full_response += chunk.text
-                    await self._send_ai_chunk_to_browser(chunk.text)
+                full_response += chunk.text
             
-            print(f"[AI Response]\n---\n{full_response}\n---")
+            print(f"[AI Raw Response]\n---\n{full_response}\n---")
+
+            # 4. JSON 파싱 및 결과 전송
+            try:
+                # 응답에서 JSON 객체만 추출
+                json_match = re.search(r'\{.*\}', full_response, re.DOTALL)
+                if json_match:
+                    json_data = json.loads(json_match.group(0))
+                    # 1. 항상 result 값을 브라우저에 표시
+                    result_text = json_data.get("result", "Error: 'result' field not found in JSON response.")
+                    await self._send_ai_chunk_to_browser(result_text)
+
+                    # 2. isOnlyAnswer가 false이고 updates가 있으면 HTML 수정 적용
+                    if not json_data.get("isOnlyAnswer", True) and "updates" in json_data:
+                        updates = json_data["updates"]
+                        await self._apply_html_updates_in_browser(updates)
+            except json.JSONDecodeError:
+                await self._send_ai_chunk_to_browser(f"Error: Failed to decode AI's JSON response.\n\nRaw response:\n{full_response}")
         except Exception as e:
             error_message = f"[AI Error] Gemini API 처리 중 오류 발생: {e}"
             print(error_message)
@@ -174,3 +227,4 @@ class PlaywrightThread(QThread):
 
             await browser.close()
             self.page = None
+import re

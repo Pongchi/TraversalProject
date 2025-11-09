@@ -18,11 +18,14 @@
                 position: fixed;
                 top: 20%; /* 화면 중앙에서 살짝 위로 조정 */
                 left: 50%;
-                transform: translate(-50%, -50%);
+                transform: translateX(-50%); /* 수평 중앙 정렬만 */
                 z-index: 2147483647; /* Max z-index */
                 width: 600px;
                 display: none; /* 기본적으로 숨김 */
                 background-color: white; /* 배경색 추가 */
+                padding: 16px; /* 컨테이너 내부 패딩 추가 */
+                border-radius: 12px;
+                box-shadow: 0 8px 24px rgba(0,0,0,0.2);
             }
             .ai-prompt-input {
                 width: 100%;
@@ -30,9 +33,8 @@
                 font-size: 18px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 color: #222;
-                border: 1px solid #ddd;
-                border-radius: 12px;
-                box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+                border: 1px solid #ddd; /* 테두리만 남김 */
+                border-radius: 8px; /* 컨테이너와 다르게 약간 작은 둥근 모서리 */
                 outline: none;
                 box-sizing: border-box; /* 패딩이 너비에 포함되도록 설정 */
                 padding-right: 50px; /* 아이콘 공간 확보 */
@@ -89,6 +91,42 @@
         const container = document.createElement('div');
         container.className = 'ai-prompt-container';
 
+        // Checkbox for including HTML
+        const includeHtmlContainer = document.createElement('div');
+        includeHtmlContainer.style.marginBottom = '8px'; // Spacing below checkbox
+        includeHtmlContainer.style.display = 'flex';
+        includeHtmlContainer.style.alignItems = 'center';
+
+        const includeHtmlCheckbox = document.createElement('input');
+        includeHtmlCheckbox.type = 'checkbox';
+        includeHtmlCheckbox.id = 'ai-include-html-checkbox';
+        includeHtmlCheckbox.style.marginRight = '8px'; // Space between checkbox and label
+
+        const includeHtmlLabel = document.createElement('label');
+        includeHtmlLabel.htmlFor = 'ai-include-html-checkbox';
+        includeHtmlLabel.textContent = '현재 페이지 HTML 포함';
+        includeHtmlLabel.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        includeHtmlLabel.style.fontSize = '14px';
+        includeHtmlLabel.style.color = '#555';
+        includeHtmlContainer.appendChild(includeHtmlCheckbox);
+        includeHtmlContainer.appendChild(includeHtmlLabel);
+
+        // Checkbox for including URL
+        const includeUrlCheckbox = document.createElement('input');
+        includeUrlCheckbox.type = 'checkbox';
+        includeUrlCheckbox.id = 'ai-include-url-checkbox';
+        includeUrlCheckbox.style.marginRight = '8px';
+        includeUrlCheckbox.style.marginLeft = '16px'; // Add some space from the first checkbox
+
+        const includeUrlLabel = document.createElement('label');
+        includeUrlLabel.htmlFor = 'ai-include-url-checkbox';
+        includeUrlLabel.textContent = '현재 URL 포함';
+        includeUrlLabel.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        includeUrlLabel.style.fontSize = '14px';
+        includeUrlLabel.style.color = '#555';
+        includeHtmlContainer.appendChild(includeUrlCheckbox); // Add to the same container
+        includeHtmlContainer.appendChild(includeUrlLabel);
+
         // 입력창과 버튼을 감싸는 래퍼
         const inputWrapper = document.createElement('div');
         inputWrapper.style.position = 'relative';
@@ -113,7 +151,8 @@
         const responseArea = document.createElement('div');
         responseArea.className = 'ai-response-area';
         responseArea.style.display = 'none'; // 기본적으로 숨김
-
+        
+        container.appendChild(includeHtmlContainer); // Add checkbox container to main container
         inputWrapper.appendChild(input);
         inputWrapper.appendChild(submitButton);
         inputWrapper.appendChild(spinner);
@@ -121,7 +160,7 @@
         container.appendChild(responseArea); // 컨테이너에 응답 영역 추가
         document.body.appendChild(container);
 
-        return { container, input, submitButton, responseArea, spinner };
+        return { container, input, submitButton, responseArea, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox };
     };
 
     const initialize = () => {
@@ -129,7 +168,7 @@
         // createPromptBar가 DOM이 준비되지 않아 null을 반환하면 아무것도 하지 않음
         if (!elements) return;
 
-        const { container, input, submitButton, responseArea, spinner } = elements;
+        const { container, input, submitButton, responseArea, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox } = elements;
 
         const togglePromptBar = (show) => {
             const isVisible = container.style.display === 'block';
@@ -137,10 +176,12 @@
 
             if (showBar) {
                 container.style.display = 'block';
+                includeHtmlContainer.style.display = 'flex'; // Show checkbox container
                 input.focus();
             } else {
                 container.style.display = 'none';
                 responseArea.style.display = 'none'; // 닫을 때 응답 영역도 숨김
+                includeHtmlContainer.style.display = 'none'; // Hide checkbox container
                 input.blur();
             }
         };
@@ -157,12 +198,23 @@
 
         submitButton.addEventListener('click', () => {
             const prompt = input.value.trim();
+            let htmlContent = null;
+            let currentUrl = null;
+
+            if (includeHtmlCheckbox.checked) {
+                htmlContent = document.documentElement.outerHTML;
+            }
+            if (includeUrlCheckbox.checked) {
+                currentUrl = window.location.href;
+            }
+
             if (prompt && window.handleAiPrompt) {
                 console.log(`Sending prompt to AI: ${prompt}`);
                 submitButton.style.display = 'none'; // 버튼 숨기기
                 spinner.style.display = 'block'; // 스피너 보이기
-                window.handleAiPrompt(prompt); // 백엔드 함수 호출
+                window.handleAiPrompt(prompt, htmlContent, currentUrl); // HTML 및 URL 콘텐츠도 함께 전달
                 input.value = '';
+                // 답변을 봐야하므로 자동으로 닫지 않음
                 // togglePromptBar(false); // 답변을 봐야하므로 자동으로 닫지 않음
             }
         });
@@ -199,6 +251,54 @@
             responseArea.textContent += text;
             // 새 내용이 추가될 때마다 맨 아래로 스크롤
             responseArea.scrollTop = responseArea.scrollHeight;
+        };
+
+        window.applyHtmlUpdates = (updates) => {
+            if (!Array.isArray(updates)) {
+                console.error("HTML Updates: The provided data is not an array.", updates);
+                return;
+            }
+            console.log("Applying HTML updates:", updates);
+
+            updates.forEach(update => {
+                if (update.action === 'jscode') {
+                    console.log(`Executing jscode: ${update.content}`);
+                    eval(update.content);
+                    return; // jscode는 여기서 실행하고 종료
+                }
+                try {
+                    const elements = document.querySelectorAll(update.selector);
+                    if (elements.length === 0) {
+                        console.warn(`HTML Update: No elements found for selector "${update.selector}"`);
+                        return;
+                    }
+
+                    elements.forEach(element => {
+                        switch (update.action) {
+                            case 'replace':
+                                element.outerHTML = update.content;
+                                break;
+                            case 'append':
+                                element.innerHTML += update.content;
+                                break;
+                            case 'prepend':
+                                element.innerHTML = update.content + element.innerHTML;
+                                break;
+                            case 'remove':
+                                element.remove();
+                                break;
+                            case 'style':
+                                // 여러 스타일 속성을 한 번에 적용하기 위해 cssText 사용
+                                element.style.cssText += update.content;
+                                break;
+                            default:
+                                console.warn(`HTML Update: Unknown action "${update.action}"`);
+                        }
+                    });
+                } catch (e) {
+                    console.error(`HTML Update: Failed to apply update for selector "${update.selector}"`, e);
+                }
+            });
         };
     }
 
