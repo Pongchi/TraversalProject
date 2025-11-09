@@ -1,12 +1,31 @@
 import sys
 import queue
+import os
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QIcon
+# Windows 작업 표시줄 아이콘 설정을 위해 추가
+if sys.platform == 'win32':
+    import ctypes
 
 from gui import MainWindow
 from proxy import MitmThread
 
 if __name__ == "__main__":
+    # --- Windows 작업 표시줄 아이콘 설정 ---
+    # 이 ID는 애플리케이션을 고유하게 식별하여 작업 표시줄에 아이콘이 올바르게 표시되도록 돕습니다.
+    if sys.platform == 'win32':
+        myappid = 'casper.traversalproject.1.0' 
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    # ------------------------------------
+
     app = QApplication(sys.argv)
+
+    # --- 애플리케이션 아이콘 설정 ---
+    # icon.svg 파일이 main.py와 같은 디렉토리에 있다고 가정합니다.
+    icon_path = os.path.join(os.path.dirname(__file__), 'icon.svg')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    # --------------------------------
     
     # mitmproxy <-> GUI 통신을 위한 큐
     shared_queue = queue.Queue()  # 데이터 전달용 (proxy -> gui)
