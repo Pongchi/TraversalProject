@@ -1,6 +1,7 @@
 import asyncio
 from PySide6.QtCore import QThread
 from playwright.async_api import async_playwright
+import os
 
 class PlaywrightThread(QThread):
     def __init__(self, parent=None):
@@ -34,10 +35,16 @@ class PlaywrightThread(QThread):
             browser = await p.chromium.launch(headless=False, args=chromium_args)
             browser.on("disconnected", on_disconnected)
             
-            context = await browser.new_context(
-                proxy={"server": "http://127.0.0.1:8080"},
-                ignore_https_errors=True
-            )
+            context = await browser.new_context(proxy={"server": "http://127.0.0.1:8080"}, ignore_https_errors=True)
+
+            # --- [핵심 수정] script.js 파일에서 스크립트를 읽어와 주입 ---
+            script_path = os.path.join(os.path.dirname(__file__), 'script.js')
+            with open(script_path, 'r', encoding='utf-8') as f:
+                script = f.read()
+
+            await context.add_init_script(script)
+            # ----------------------------------------------------
+
             page = await context.new_page()
             
             print(f"Playwright 브라우저가 시작되었습니다.")
