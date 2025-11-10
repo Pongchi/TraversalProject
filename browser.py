@@ -101,10 +101,11 @@ class PlaywrightThread(QThread):
         except Exception as e:
             print(f"HTML 업데이트 적용 중 오류: {e}")
 
-    async def handle_ai_prompt(self, prompt: str, html_content: str | None = None, current_url: str | None = None):
+    async def handle_ai_prompt(self, prompt: str, html_content: str | None = None, current_url: str | None = None, previous_context: dict = None, depth: int = 0):
         """브라우저로부터 AI 프롬프트를 받아 처리합니다."""
-        print(f"\n[AI Prompt] 수신: {prompt}")
-        
+        if not previous_context:
+            print(f"\n[AI Prompt] 수신 (Depth: {depth}): {prompt}")
+
         context_info = []
         if current_url:
             print(f"[AI Prompt] URL 포함: {current_url}")
@@ -114,20 +115,39 @@ class PlaywrightThread(QThread):
             print(f"[AI Prompt] HTML 콘텐츠 포함 (길이: {len(html_content)} bytes)")
             context_info.append(f"--- Current Page HTML ---\n{html_content}")
 
+        if previous_context:
+            if "original_prompt" in previous_context:
+                context_info.append(f"--- Original User Prompt ---\n{previous_context['original_prompt']}")
+            if "previous_updates" in previous_context:
+                context_info.append(f"--- Your Previous Action (updates) ---\n{json.dumps(previous_context['previous_updates'], indent=2)}")
+            if "jscode_result" in previous_context:
+                context_info.append(f"--- Result from previous jscode execution ---\n{previous_context['jscode_result']}")
+
         context_str = "\n\n".join(context_info)
 
         json_format_instruction = """
-IMPORTANT: Your response MUST be in the following JSON format only.
+IMPORTANT: Your response MUST be in the following JSON format. Your primary goal is to use the provided tools to interact with the web page accurately.
 
-1.  If the user asks a general question, or you are just providing an answer, set "isOnlyAnswer" to true.
-2.  If the user explicitly asks to modify the current page's HTML (e.g., "change the background color", "remove this button"), you MUST set "isOnlyAnswer" to false and provide the necessary changes in the "updates" array.
-3.  If you need to change an element's property that is not in the HTML source (like an input's `value`), use the "jscode" action.
+1.  **Information Gathering is a Two-Step Process**: To answer questions about the page content (e.g., "what is the value of the input?", "is the button disabled?"), you MUST first gather information.
+    - **Step 1: Ask for Information.** Generate a `jscode` action that returns the information you need (e.g., `return document.querySelector('#my-input').value;`). In this step, you MUST set `"end": false`. Your `result` text should explain what you are trying to find out.
+    - **Step 2: Provide the Answer.** The system will execute your code and re-invoke you with the result. Now, you can provide the final answer in the `result` field and set `"end": true`.
+
+2.  **Final Actions (`end: true`)**: Set `"end": true` when your task is complete. This applies to:
+    - Providing the final answer after gathering information (Step 2 above).
+    - Performing a direct page modification (`replace`, `style`, etc.).
+    - Executing `jscode` that performs an action without needing feedback (e.g., clicking a button: `document.querySelector('#btn').click();`).
+3.  **Follow-up Actions (`followUpPrompt`)**: If your `jscode` needs to trigger a *different* AI action based on a condition, return an object with a `followUpPrompt` property. This is for chaining distinct tasks. Example: `return { followUpPrompt: 'The element was found. Now, please click it.' };`
 
 {
   "isOnlyAnswer": <boolean>,
   "result": "<string: Your textual answer to the user's prompt.>",
+  "end": <boolean: true if the task is complete, false if you need feedback from your jscode.>,
   "updates": [
-    { "selector": "<string: A valid CSS selector, can be null for general jscode>", "action": "<'replace'|'append'|'prepend'|'remove'|'style'|'jscode'>", "content": "<string: The new HTML, CSS rules, or JavaScript code to execute>" }
+    { 
+      "selector": "<string: A valid CSS selector, can be null for general jscode>", 
+      "action": "<'replace'|'append'|'prepend'|'remove'|'style'|'jscode'>", 
+      "content": "<string: The new HTML, CSS rules, or JavaScript code to execute. The jscode should be the body of an async function.>" 
+    }
   ]
 }"""
         final_prompt = f"{prompt}\n\n{context_str}\n\n{json_format_instruction}"
@@ -150,7 +170,8 @@ IMPORTANT: Your response MUST be in the following JSON format only.
             response_stream = await model.generate_content_async(final_prompt, stream=True)
 
             # 3. 스트리밍 결과를 실시간으로 브라우저에 전송
-            if self.page:
+            # Only start a new response area if it's the first step in a chain
+            if not previous_context and self.page:
                 await self.page.evaluate("window.startAiResponse()")
 
             full_response = ""
@@ -166,13 +187,47 @@ IMPORTANT: Your response MUST be in the following JSON format only.
                 if json_match:
                     json_data = json.loads(json_match.group(0))
                     # 1. 항상 result 값을 브라우저에 표시
-                    result_text = json_data.get("result", "Error: 'result' field not found in JSON response.")
-                    await self._send_ai_chunk_to_browser(result_text)
+                    result_text = json_data.get("result")
+                    if result_text:
+                        await self._send_ai_chunk_to_browser(result_text + "\n")
 
-                    # 2. isOnlyAnswer가 false이고 updates가 있으면 HTML 수정 적용
+                    # 2. isOnlyAnswer가 false이고 updates가 있으면 HTML 수정/jscode 실행 적용
                     if not json_data.get("isOnlyAnswer", True) and "updates" in json_data:
                         updates = json_data["updates"]
-                        await self._apply_html_updates_in_browser(updates)
+                        is_final_step = json_data.get("end", True) # Default to True if 'end' is missing
+                        # Pass the 'end' flag to the browser function
+                        jscode_result = await self.page.evaluate("window.applyHtmlUpdates", [updates, is_final_step])
+                        
+                        if jscode_result is not None:
+                            jscode_result_str = str(jscode_result)
+                            print(f"[jscode result] {jscode_result_str}")
+                            # jscode 결과를 브라우저 UI에 표시
+                            if self.page:
+                                await self.page.evaluate("window.appendAiDebugInfo", f"jscode result: {jscode_result_str}")
+                                
+                        # 3. If the AI indicated this is not the end, loop back
+                        if not is_final_step:
+                            if depth >= 2: # Limit depth to 3 (0, 1, 2)
+                                print("[AI Loop] Maximum depth reached. Stopping loop.")
+                                await self._send_ai_chunk_to_browser("\n[System] Maximum conversation depth (3) reached. Stopping.")
+                                if self.page:
+                                    await self.page.evaluate("() => { document.querySelector('.ai-spinner').style.display = 'none'; document.querySelector('.ai-prompt-submit-button').style.display = 'flex'; }")
+                                return
+
+                            print(f"[AI Loop] `end: false` received. Depth: {depth}. jscode result: {jscode_result}. Re-prompting AI.")
+                            new_context = {
+                                "original_prompt": prompt,
+                                "jscode_result": str(jscode_result), # Use the string representation
+                                "previous_updates": updates
+                            }
+                            # Get current page state and re-invoke
+                            # For follow-up prompts, we don't need to send the HTML and URL again.
+                            await self.handle_ai_prompt(prompt, None, None, previous_context=new_context, depth=depth + 1)
+                    else:
+                        # No updates to apply, so the task is done. Reset the UI.
+                        if self.page:
+                            await self.page.evaluate("() => { document.querySelector('.ai-spinner').style.display = 'none'; document.querySelector('.ai-prompt-submit-button').style.display = 'flex'; }")
+
             except json.JSONDecodeError:
                 await self._send_ai_chunk_to_browser(f"Error: Failed to decode AI's JSON response.\n\nRaw response:\n{full_response}")
         except Exception as e:
@@ -206,13 +261,11 @@ IMPORTANT: Your response MUST be in the following JSON format only.
             # --- [핵심] Python 함수를 브라우저의 window 객체에 노출 ---
             await context.expose_function("handleAiPrompt", self.handle_ai_prompt)
 
-            # --- [핵심 수정] script.js 파일에서 스크립트를 읽어와 주입 ---
+            # script.js 파일에서 스크립트를 읽어와 모든 페이지에 주입
             script_path = os.path.join(os.path.dirname(__file__), 'script.js')
             with open(script_path, 'r', encoding='utf-8') as f:
                 script = f.read()
-
             await context.add_init_script(script)
-            # ----------------------------------------------------
 
             self.page = await context.new_page()
             

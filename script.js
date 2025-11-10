@@ -72,18 +72,32 @@
             }
             @keyframes spin { 0% { transform: translateY(-50%) rotate(0deg); } 100% { transform: translateY(-50%) rotate(360deg); } }
             .ai-response-area {
-                padding: 16px 20px;
-                margin-top: 8px;
+                padding: 12px 16px;
+                margin-top: 12px;
                 border: 1px solid #ddd;
-                border-radius: 12px;
-                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                border-radius: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 16px;
-                color: #333;
+                font-size: 15px;
+                color: #444;
                 white-space: pre-wrap; /* 줄바꿈 및 공백 유지 */
                 word-wrap: break-word; /* 긴 단어 줄바꿈 */
                 max-height: 400px; /* 최대 높이 지정 */
                 overflow-y: auto; /* 내용이 길어지면 스크롤 */
+            }
+            .ai-response-step {
+                padding: 8px;
+                border-bottom: 1px solid #eee;
+            }
+            .ai-response-step:last-child {
+                border-bottom: none;
+            }
+            .ai-debug-info {
+                font-style: italic;
+                color: #888;
+                font-size: 13px;
+                margin-top: 4px;
+                padding-left: 8px;
+                border-left: 2px solid #eee;
             }
         `;
         document.head.appendChild(style);
@@ -147,20 +161,19 @@
         const spinner = document.createElement('div');
         spinner.className = 'ai-spinner';
 
-        // 응답을 표시할 영역
-        const responseArea = document.createElement('div');
-        responseArea.className = 'ai-response-area';
-        responseArea.style.display = 'none'; // 기본적으로 숨김
+        // 여러 응답을 담을 컨테이너
+        const responsesContainer = document.createElement('div');
+        responsesContainer.className = 'ai-responses-container';
         
         container.appendChild(includeHtmlContainer); // Add checkbox container to main container
         inputWrapper.appendChild(input);
         inputWrapper.appendChild(submitButton);
         inputWrapper.appendChild(spinner);
         container.appendChild(inputWrapper);
-        container.appendChild(responseArea); // 컨테이너에 응답 영역 추가
+        container.appendChild(responsesContainer); // 컨테이너에 응답 컨테이너 추가
         document.body.appendChild(container);
 
-        return { container, input, submitButton, responseArea, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox };
+        return { container, input, submitButton, responsesContainer, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox };
     };
 
     const initialize = () => {
@@ -168,7 +181,7 @@
         // createPromptBar가 DOM이 준비되지 않아 null을 반환하면 아무것도 하지 않음
         if (!elements) return;
 
-        const { container, input, submitButton, responseArea, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox } = elements;
+        const { container, input, submitButton, responsesContainer, spinner, includeHtmlContainer, includeHtmlCheckbox, includeUrlCheckbox } = elements;
 
         const togglePromptBar = (show) => {
             const isVisible = container.style.display === 'block';
@@ -180,7 +193,6 @@
                 input.focus();
             } else {
                 container.style.display = 'none';
-                responseArea.style.display = 'none'; // 닫을 때 응답 영역도 숨김
                 includeHtmlContainer.style.display = 'none'; // Hide checkbox container
                 input.blur();
             }
@@ -240,37 +252,94 @@
 
         // --- Python에서 호출할 함수들을 window 객체에 추가 ---
         window.startAiResponse = () => {
-            responseArea.innerHTML = '';
-            responseArea.style.display = 'block';
-            spinner.style.display = 'none'; // 스피너 숨기기
-            submitButton.style.display = 'flex'; // 버튼 다시 보이기
+            const newResponseArea = document.createElement('div');
+            newResponseArea.className = 'ai-response-area';
+            responsesContainer.appendChild(newResponseArea);
+            // 새 응답 영역으로 스크롤
+            responsesContainer.scrollTop = responsesContainer.scrollHeight;
         };
 
         window.appendAiResponse = (text) => {
-            // 텍스트를 그대로 추가하여 pre-wrap 스타일이 적용되도록 함
-            responseArea.textContent += text;
-            // 새 내용이 추가될 때마다 맨 아래로 스크롤
-            responseArea.scrollTop = responseArea.scrollHeight;
-        };
+            const responseAreas = responsesContainer.querySelectorAll('.ai-response-area');
+            if (responseAreas.length === 0) {
+                window.startAiResponse(); // 응답 영역이 없으면 하나 생성
+            }
+            const lastResponseArea = responseAreas[responseAreas.length - 1];
 
-        window.applyHtmlUpdates = (updates) => {
+            // 각 응답을 별도의 div로 감싸서 시각적으로 분리
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'ai-response-step';
+            stepDiv.textContent = text;
+            lastResponseArea.appendChild(stepDiv);
+
+            // 새 내용이 추가될 때마다 맨 아래로 스크롤
+            responsesContainer.scrollTop = responsesContainer.scrollHeight;
+        };
+        
+        window.appendAiDebugInfo = (text) => {
+            const lastResponseArea = document.querySelector('.ai-response-area:last-child');
+            if (!lastResponseArea) return;
+            const debugDiv = document.createElement('div');
+            debugDiv.className = 'ai-debug-info';
+            debugDiv.textContent = text;
+            lastResponseArea.appendChild(debugDiv);
+            responsesContainer.scrollTop = responsesContainer.scrollHeight;
+        }
+
+        window.applyHtmlUpdates = async (args) => {
+            const [updates, is_final_step] = args;
+
             if (!Array.isArray(updates)) {
                 console.error("HTML Updates: The provided data is not an array.", updates);
-                return;
+                return null;
             }
             console.log("Applying HTML updates:", updates);
 
-            updates.forEach(update => {
+            // Use a for...of loop to handle async operations correctly
+            for (const update of updates) {
                 if (update.action === 'jscode') {
-                    console.log(`Executing jscode: ${update.content}`);
-                    eval(update.content);
-                    return; // jscode는 여기서 실행하고 종료
+                    console.log(`Executing jscode: ${update.content}`);                    
+                    try {
+                        // The AI-generated code is the body of an async function.
+                        const result = await new Function(`return (async () => { ${update.content} })();`)();
+                        console.log("jscode execution result:", result);
+
+                        // If the AI has a followUpPrompt, trigger it immediately. This takes priority.
+                        if (result && result.followUpPrompt && window.handleAiPrompt) {
+                            console.log("Follow-up prompt detected, triggering next AI action:", result.followUpPrompt);
+                            window.handleAiPrompt(result.followUpPrompt, document.documentElement.outerHTML, window.location.href);
+                            return; // Stop further processing
+                        }
+
+                        // If it's not the final step, return the result to Python backend.
+                        if (!is_final_step) {
+                            return result;
+                        } else {
+                            // This was the final step, so ensure the UI is reset.
+                            // This handles cases where jscode was the last action.
+                            console.log("Final jscode execution complete. Resetting UI.");
+                            spinner.style.display = 'none';
+                            submitButton.style.display = 'flex';
+                        }
+
+                    } catch (e) {
+                        console.error("Error executing jscode:", e);
+                        // If not final, return error to Python so AI can see it.
+                        if (!is_final_step) {
+                            return { error: e.message };
+                        } else {
+                            // Also reset UI on error in final step.
+                            spinner.style.display = 'none';
+                            submitButton.style.display = 'flex';
+                        }
+                    }
+                    continue; // Continue to the next update if any
                 }
                 try {
                     const elements = document.querySelectorAll(update.selector);
                     if (elements.length === 0) {
                         console.warn(`HTML Update: No elements found for selector "${update.selector}"`);
-                        return;
+                        continue;
                     }
 
                     elements.forEach(element => {
@@ -298,9 +367,44 @@
                 } catch (e) {
                     console.error(`HTML Update: Failed to apply update for selector "${update.selector}"`, e);
                 }
-            });
+            }
+            // If the updates were final (and not jscode), reset the UI.
+            if (is_final_step) {
+                spinner.style.display = 'none';
+                submitButton.style.display = 'flex';
+            }
+
+            return null; // Default return value if no jscode result is needed
         };
     }
+
+    // --- SPA Navigation Handling ---
+    // This function ensures the prompt bar is present after a navigation.
+    const ensurePromptBarExists = () => {
+        // Use a short delay to allow the SPA's rendering to complete.
+        setTimeout(() => {
+            if (!document.querySelector('.ai-prompt-container')) {
+                console.log("AI Prompt Bar not found after navigation. Re-initializing.");
+                initialize();
+            }
+        }, 100); // 100ms delay as a starting point.
+    };
+
+    // Monkey-patch history.pushState and history.replaceState
+    const originalPushState = history.pushState;
+    history.pushState = function(...args) {
+        originalPushState.apply(this, args);
+        ensurePromptBarExists();
+    };
+
+    const originalReplaceState = history.replaceState;
+    history.replaceState = function(...args) {
+        originalReplaceState.apply(this, args);
+        ensurePromptBarExists();
+    };
+
+    // Listen for browser back/forward button clicks
+    window.addEventListener('popstate', ensurePromptBarExists);
 
     // DOM이 이미 로드되었는지 확인하고, 그렇지 않으면 이벤트를 기다립니다.
     if (document.readyState === 'loading') {
