@@ -12,7 +12,7 @@ from browser import PlaywrightThread
 class MainWindow(QMainWindow):
     def __init__(self, shared_queue: queue.Queue, command_queue: queue.Queue):
         super().__init__()
-        self.setWindowTitle("AutoSitemap")
+        self.setWindowTitle("PongpSuite")
         self.resize(1024, 768) 
 
         self.queue = shared_queue
