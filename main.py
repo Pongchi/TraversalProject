@@ -18,7 +18,8 @@ if __name__ == "__main__":
         myappid = 'pongchi.clonecoding.burpsutie.1.0' 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     # ------------------------------------
-
+    os.environ['QTWEBENGINE_REMOTE_DEBUGGING'] = '9222'
+    
     app = QApplication(sys.argv)
 
     # --- 애플리케이션 아이콘 설정 ---

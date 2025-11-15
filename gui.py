@@ -1,10 +1,14 @@
 import queue
+import os
+import json
+from urllib.parse import urlparse
 from PySide6.QtWidgets import (
     QMainWindow, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
     QSplitter, QTabWidget, QTextEdit, QPushButton, QHBoxLayout, QSpacerItem, QSizePolicy,
     QLabel, QLineEdit
 )
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from proxy import FlowData
 from browser import PlaywrightThread
@@ -20,10 +24,18 @@ class MainWindow(QMainWindow):
         self.flows_data_list = []
         self.current_selected_flow_data: FlowData | None = None
 
-        # --- 메인 위젯 및 레이아웃 설정 ---
+        # --- 메인 탭 위젯 설정 ---
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        self.main_tabs = QTabWidget()
+        main_layout.addWidget(self.main_tabs)
+
+        # --- History 탭 생성 ---
+        history_widget = QWidget()
+        history_layout = QVBoxLayout(history_widget)
+        self.main_tabs.addTab(history_widget, "History")
+
 
         # --- 상단 버튼 영역 ---
         top_layout = QHBoxLayout()
@@ -38,11 +50,11 @@ class MainWindow(QMainWindow):
 
         self.open_button = QPushButton("Open Browser")
         top_layout.addWidget(self.open_button)
-        main_layout.addLayout(top_layout)
+        history_layout.addLayout(top_layout)
 
         # --- History UI (테이블 및 상세 보기) ---
         history_splitter = QSplitter(Qt.Vertical)
-        main_layout.addWidget(history_splitter)
+        history_layout.addWidget(history_splitter)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -77,6 +89,21 @@ class MainWindow(QMainWindow):
         history_splitter.setStretchFactor(0, 4)
         history_splitter.setStretchFactor(1, 6)
 
+        # --- Swagger 탭 생성 ---
+        swagger_widget = QWidget()
+        swagger_layout = QVBoxLayout(swagger_widget)
+        self.main_tabs.addTab(swagger_widget, "Swagger")
+
+        swagger_button_layout = QHBoxLayout()
+        self.swagger_refresh_button = QPushButton("Refresh Swagger Spec")
+        swagger_button_layout.addWidget(self.swagger_refresh_button)
+        swagger_button_layout.addSpacerItem(QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum))
+        swagger_layout.addLayout(swagger_button_layout)
+
+        self.swagger_view = QWebEngineView()
+        swagger_layout.addWidget(self.swagger_view)
+        self.generate_and_load_swagger() # 초기 로드
+
         # --- 시그널 연결 ---
         self.open_button.clicked.connect(self.on_open_browser_clicked)
         self.scope_input.textChanged.connect(self.on_scope_changed)
@@ -84,6 +111,7 @@ class MainWindow(QMainWindow):
         self.send_button.clicked.connect(self.on_send_clicked)
         self.send_browser_button.clicked.connect(self.on_send_browser_clicked)
         self.render_browser_button.clicked.connect(self.on_render_in_browser_clicked)
+        self.swagger_refresh_button.clicked.connect(self.generate_and_load_swagger)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.check_queue) 
@@ -192,3 +220,60 @@ class MainWindow(QMainWindow):
             self.command_queue.put(command)
         except Exception as e:
             print(f"Scope 설정 명령 전송 오류: {e}")
+
+    def generate_and_load_swagger(self):
+        """History 데이터를 기반으로 OpenAPI Spec을 생성하고 웹뷰를 로드합니다."""
+        print("Swagger Spec 생성 및 로드 시작...")
+        self.generate_openapi_spec()
+
+        # swagger-ui/index.html 파일의 절대 경로를 계산합니다.
+        # __file__은 현재 파일(gui.py)의 경로입니다.
+        base_dir = os.path.dirname(__file__)
+        index_path = os.path.join(base_dir, 'swagger-ui', 'index.html')
+        
+        if not os.path.exists(index_path):
+            print(f"오류: Swagger UI 파일 '{index_path}'를 찾을 수 없습니다.")
+            self.swagger_view.setHtml("<h1>Error: swagger-ui/index.html not found.</h1>"
+                                      "<p>Please check the installation instructions.</p>")
+            return
+
+        self.swagger_view.setUrl(QUrl.fromLocalFile(index_path))
+        print("Swagger UI 로드 완료.")
+
+    def generate_openapi_spec(self):
+        """self.flows_data_list를 OpenAPI 3.0 JSON 파일로 변환합니다."""
+        openapi_spec = {
+            "openapi": "3.0.0",
+            "info": {
+                "title": "Captured API Spec",
+                "version": "1.0.0",
+                "description": "API specification automatically generated from captured traffic."
+            },
+            "paths": {}
+        }
+
+        for flow in self.flows_data_list:
+            parsed_url = urlparse(flow.url)
+            path = parsed_url.path
+
+            if path not in openapi_spec["paths"]:
+                openapi_spec["paths"][path] = {}
+
+            method = flow.method.lower()
+            if method not in openapi_spec["paths"][path]:
+                # 간단한 응답 구조만 정의합니다.
+                openapi_spec["paths"][path][method] = {
+                    "summary": f"Captured {flow.method} request to {path}",
+                    "responses": {
+                        flow.status_code: {
+                            "description": f"Status code {flow.status_code}"
+                        }
+                    }
+                }
+
+        # swagger-ui 폴더에 openapi.json 파일로 저장
+        base_dir = os.path.dirname(__file__)
+        output_path = os.path.join(base_dir, 'swagger-ui', 'openapi.json')
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(openapi_spec, f, indent=2, ensure_ascii=False)
+        print(f"OpenAPI spec이 '{output_path}'에 저장되었습니다.")
